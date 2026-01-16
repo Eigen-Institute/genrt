@@ -145,12 +145,18 @@ class DensityDecoder(nn.Module):
     produced by DensityEdgeProjection. Uses cross-attention to expand
     back to variable orbital space.
 
+    For open-shell systems (n_spin > 1), each spin channel is decoded
+    separately using a learned spin embedding that conditions the decoding
+    process. This allows alpha and beta density matrices to differ.
+
     Args:
         latent_dim: Dimension of latent representation
         n_query_tokens: Number of query tokens (must match encoder)
         max_l: Maximum angular momentum in basis
         n_heads: Number of attention heads
         dropout: Dropout probability
+        max_spin: Maximum number of spin channels (default 2 for alpha/beta)
+        spin_embed_dim: Dimension of spin embedding (default 32)
     """
 
     def __init__(
@@ -160,18 +166,26 @@ class DensityDecoder(nn.Module):
         max_l: int = 2,
         n_heads: int = 8,
         dropout: float = 0.1,
+        max_spin: int = 2,
+        spin_embed_dim: int = 32,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.n_query_tokens = n_query_tokens
+        self.spin_embed_dim = spin_embed_dim
+
+        # Spin embedding for conditioning decoder on spin channel
+        # Index 0 = alpha (or closed-shell), Index 1 = beta
+        self.spin_embed = nn.Embedding(max_spin, spin_embed_dim)
 
         # Orbital embedding (same structure as encoder)
         self.element_embed = nn.Embedding(100, 32)
         self.l_embed = nn.Embedding(max_l + 1, 16)
         self.m_embed = nn.Embedding(2 * max_l + 1, 16)
 
+        # Orbital projection now includes spin embedding
         self.orbital_proj = nn.Sequential(
-            nn.Linear(32 + 16 + 16, latent_dim),
+            nn.Linear(32 + 16 + 16 + spin_embed_dim, latent_dim),
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )
@@ -196,45 +210,62 @@ class DensityDecoder(nn.Module):
         Z: Tensor,
         l: Tensor,
         m: Tensor,
+        spin_idx: int = 0,
     ) -> Tensor:
-        """Embed orbital metadata."""
+        """
+        Embed orbital metadata with spin conditioning.
+
+        Args:
+            Z: Atomic numbers, shape (n_basis,)
+            l: Angular momentum, shape (n_basis,)
+            m: Magnetic quantum number, shape (n_basis,)
+            spin_idx: Spin channel index (0=alpha, 1=beta)
+
+        Returns:
+            Orbital embeddings conditioned on spin, shape (n_basis, latent_dim)
+        """
+        device = Z.device
+        n_basis = Z.shape[0]
+
         m_shifted = m + 3
         elem_emb = self.element_embed(Z)
         l_emb = self.l_embed(l)
         m_emb = self.m_embed(m_shifted.clamp(0, 6))
-        combined = torch.cat([elem_emb, l_emb, m_emb], dim=-1)
+
+        # Get spin embedding and broadcast to all orbitals
+        spin_tensor = torch.tensor([spin_idx], device=device, dtype=torch.long)
+        spin_emb = self.spin_embed(spin_tensor)  # (1, spin_embed_dim)
+        spin_emb = spin_emb.expand(n_basis, -1)  # (n_basis, spin_embed_dim)
+
+        combined = torch.cat([elem_emb, l_emb, m_emb, spin_emb], dim=-1)
         return self.orbital_proj(combined)
 
-    def forward(
+    def _decode_single_spin(
         self,
         latent: Tensor,
-        basis_metadata: dict[str, Tensor],
-        n_spin: int = 1,
+        Z: Tensor,
+        l: Tensor,
+        m: Tensor,
+        spin_idx: int,
     ) -> Tensor:
         """
-        Decode latent to density matrix.
+        Decode latent to a single spin channel's density matrix.
 
         Args:
             latent: Latent representation, shape (n_query_tokens, latent_dim)
-            basis_metadata: Dictionary containing:
-                - 'Z': Atomic number per basis function, shape (n_basis,)
-                - 'l': Angular momentum per basis function, shape (n_basis,)
-                - 'm': Magnetic quantum number per basis function, shape (n_basis,)
-            n_spin: Number of spin channels
+            Z: Atomic numbers, shape (n_basis,)
+            l: Angular momentum, shape (n_basis,)
+            m: Magnetic quantum number, shape (n_basis,)
+            spin_idx: Spin channel index (0=alpha, 1=beta)
 
         Returns:
-            Reconstructed density matrix, shape (n_spin, n_basis, n_basis) complex
+            Density matrix for this spin channel, shape (n_basis, n_basis) complex
         """
         device = latent.device
-        n_basis = len(basis_metadata['Z'])
+        n_basis = Z.shape[0]
 
-        # Get basis metadata
-        Z = basis_metadata['Z'].to(device)
-        l = basis_metadata['l'].to(device)
-        m = basis_metadata['m'].to(device)
-
-        # Embed orbitals
-        orbital_embeddings = self._embed_orbitals(Z, l, m)
+        # Embed orbitals with spin conditioning
+        orbital_embeddings = self._embed_orbitals(Z, l, m, spin_idx=spin_idx)
 
         # Create pair indices
         i_idx, j_idx = torch.meshgrid(
@@ -260,8 +291,47 @@ class DensityDecoder(nn.Module):
         rho = torch.complex(rho_real, rho_imag)
         rho = rho.reshape(n_basis, n_basis)
 
-        # Expand to spin channels
-        rho = rho.unsqueeze(0).expand(n_spin, -1, -1).clone()
+        return rho
+
+    def forward(
+        self,
+        latent: Tensor,
+        basis_metadata: dict[str, Tensor],
+        n_spin: int = 1,
+    ) -> Tensor:
+        """
+        Decode latent to density matrix.
+
+        For open-shell systems (n_spin > 1), each spin channel is decoded
+        separately with spin-specific conditioning, allowing alpha and beta
+        density matrices to differ.
+
+        Args:
+            latent: Latent representation, shape (n_query_tokens, latent_dim)
+            basis_metadata: Dictionary containing:
+                - 'Z': Atomic number per basis function, shape (n_basis,)
+                - 'l': Angular momentum per basis function, shape (n_basis,)
+                - 'm': Magnetic quantum number per basis function, shape (n_basis,)
+            n_spin: Number of spin channels (1 for closed-shell, 2 for open-shell)
+
+        Returns:
+            Reconstructed density matrix, shape (n_spin, n_basis, n_basis) complex
+        """
+        device = latent.device
+
+        # Get basis metadata
+        Z = basis_metadata['Z'].to(device)
+        l = basis_metadata['l'].to(device)
+        m = basis_metadata['m'].to(device)
+
+        # Decode each spin channel separately with spin conditioning
+        spin_matrices = []
+        for spin_idx in range(n_spin):
+            rho_spin = self._decode_single_spin(latent, Z, l, m, spin_idx)
+            spin_matrices.append(rho_spin)
+
+        # Stack spin channels
+        rho = torch.stack(spin_matrices, dim=0)  # (n_spin, n_basis, n_basis)
 
         return rho
 

@@ -297,6 +297,77 @@ class TestDecoder:
 
         assert latent.grad is not None
 
+    def test_decoder_spin_channels_differ(self, decoder, sample_metadata):
+        """Test that open-shell spin channels can produce different outputs.
+
+        For open-shell systems like H2+, alpha and beta density matrices
+        should be allowed to differ. The spin embedding conditions the
+        decoder differently for each spin channel.
+        """
+        latent = torch.randn(8, 64)
+        rho = decoder(latent, sample_metadata, n_spin=2)
+
+        # With learned spin embeddings, alpha and beta should differ
+        # (unless the model happens to learn identical embeddings, which is unlikely)
+        alpha = rho[0]
+        beta = rho[1]
+
+        # They should have the same shape
+        assert alpha.shape == beta.shape == (4, 4)
+
+        # The matrices should not be identical (spin embedding differentiates them)
+        # Note: This could theoretically fail with random initialization,
+        # but it's extremely unlikely
+        assert not torch.allclose(alpha, beta), \
+            "Alpha and beta spin channels should differ with spin-conditioned decoding"
+
+    def test_decoder_spin_embedding_gradient(self, decoder, sample_metadata):
+        """Test that gradients flow through spin embedding."""
+        latent = torch.randn(8, 64, requires_grad=True)
+        rho = decoder(latent, sample_metadata, n_spin=2)
+
+        # Loss that depends on both spin channels differently
+        loss = rho[0].abs().sum() + 2 * rho[1].abs().sum()
+        loss.backward()
+
+        # Check that spin embedding received gradients
+        assert decoder.spin_embed.weight.grad is not None
+        assert decoder.spin_embed.weight.grad.abs().sum() > 0
+
+    def test_decoder_closed_shell_consistency(self, sample_metadata):
+        """Test that closed-shell (n_spin=1) still works correctly."""
+        from src.models.decoder import DensityDecoder
+
+        decoder = DensityDecoder(
+            latent_dim=64,
+            n_query_tokens=8,
+            max_l=2,
+        )
+        decoder.eval()  # Disable dropout for deterministic output
+
+        latent = torch.randn(8, 64)
+
+        # Run forward twice - should get same result (deterministic in eval mode)
+        with torch.no_grad():
+            rho1 = decoder(latent, sample_metadata, n_spin=1)
+            rho2 = decoder(latent, sample_metadata, n_spin=1)
+
+        assert rho1.shape == (1, 4, 4)
+        assert rho1.is_complex()
+
+        # Output should be deterministic
+        assert torch.allclose(rho1, rho2), "Decoder should be deterministic in eval mode"
+
+    def test_decoder_spin_embedding_exists(self, decoder):
+        """Test that decoder has spin embedding with correct properties."""
+        # Check spin embedding exists
+        assert hasattr(decoder, 'spin_embed')
+        assert isinstance(decoder.spin_embed, torch.nn.Embedding)
+
+        # Check it has at least 2 embeddings (alpha and beta)
+        assert decoder.spin_embed.num_embeddings >= 2
+        assert decoder.spin_embed.embedding_dim == decoder.spin_embed_dim
+
 
 class TestFullModel:
     """Tests for RTTDDFTModel end-to-end."""
