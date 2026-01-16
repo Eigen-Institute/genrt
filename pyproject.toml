@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genrt"
+version = "0.1.0"
+description = "Machine learning accelerator for Real-Time Time-Dependent Density Functional Theory"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "RT-TDDFT ML Accelerator Team"}
+]
+keywords = ["machine-learning", "quantum-chemistry", "tddft", "e3nn", "mamba"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "torch>=2.0",
+    "e3nn>=0.5.0",
+    "torch-geometric>=2.3.0",
+    "mamba-ssm>=1.1.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "einops",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+]
+train = [
+    "wandb",
+    "hydra-core>=1.3",
+    "omegaconf",
+]
+quantum = [
+    "ase",
+    "pyscf",
+]
+
+[project.scripts]
+genrt-train = "scripts.train:main"
+genrt-eval = "scripts.evaluate:main"
+genrt-convert = "scripts.convert_nwchem:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.venv
+    | build
+    | dist
+    | data
+)/
+'''
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

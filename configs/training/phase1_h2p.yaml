@@ -1,0 +1,60 @@
+# Phase 1: H2+ Training Configuration
+# Single-molecule, single-electron system for initial model development
+
+# Data
+data:
+  path: data/processed/h2p
+  val_split: 0.1
+  trajectory_length: 64
+  batch_size: 16
+
+# Model
+model:
+  latent_dim: 256
+  n_mamba_layers: 4
+  d_state: 16
+  geometry_irreps: "32x0e + 16x1o + 8x2e"
+  max_l: 2
+
+# Training
+training:
+  max_epochs: 100
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_steps: 500
+
+  # Teacher forcing
+  teacher_forcing_ratio: 0.5
+
+  # Loss weights (from guide.md)
+  lambda_reconstruction: 1.0
+  lambda_gradient: 10.0
+  lambda_hermitian: 1.0
+  lambda_trace: 5.0
+  lambda_idempotent: 0.5
+
+# Curriculum
+curriculum:
+  type: default  # Use default curriculum for Phase 1
+
+# Hardware
+hardware:
+  device: cuda
+  use_amp: true
+  num_workers: 4
+
+# Checkpointing
+checkpoint:
+  dir: checkpoints/phase1_h2p
+  save_every_n_epochs: 10
+  keep_last_n: 3
+
+# Logging
+logging:
+  log_every_n_steps: 50
+  eval_every_n_epochs: 1
+  wandb:
+    enabled: false
+    project: rt-tddft-ml
+    run_name: phase1_h2p

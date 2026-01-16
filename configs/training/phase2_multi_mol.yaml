@@ -1,0 +1,88 @@
+# Phase 2: Multi-Molecule Training Configuration
+# Joint training on H2+, H2, LiH with curriculum learning
+
+# Data
+data:
+  path: data/processed
+  molecules:
+    - h2p
+    - h2
+    - lih
+  val_split: 0.1
+  trajectory_length: 128
+  batch_size: 8
+
+# Model
+model:
+  latent_dim: 256
+  n_mamba_layers: 6
+  d_state: 16
+  geometry_irreps: "32x0e + 16x1o + 8x2e"
+  max_l: 2
+
+# Training
+training:
+  max_epochs: 200
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_steps: 1000
+
+  # Teacher forcing - reduce as training progresses
+  teacher_forcing_ratio: 0.3
+
+  # Loss weights
+  lambda_reconstruction: 1.0
+  lambda_gradient: 10.0
+  lambda_hermitian: 1.0
+  lambda_trace: 5.0
+  lambda_idempotent: 0.5
+
+  # Use variance weighting
+  use_variance_weighting: true
+
+# Curriculum - TDDFTNet style
+curriculum:
+  type: tddftnet
+  horizon_stages: [16, 32, 48, 64]
+  epochs_per_stage: 25
+  bundle_size: 2
+
+# Loss weight schedule
+loss_schedule:
+  warmup_epochs: 20
+  initial_weights:
+    reconstruction: 1.0
+    gradient: 1.0
+    hermitian: 0.1
+    trace: 0.5
+    idempotent: 0.0
+  target_weights:
+    reconstruction: 1.0
+    gradient: 10.0
+    hermitian: 1.0
+    trace: 5.0
+    idempotent: 0.5
+  schedule_type: cosine
+
+# Hardware
+hardware:
+  device: cuda
+  use_amp: true
+  num_workers: 4
+  gradient_accumulation_steps: 2
+
+# Checkpointing
+checkpoint:
+  dir: checkpoints/phase2_multi_mol
+  save_every_n_epochs: 10
+  keep_last_n: 5
+
+# Logging
+logging:
+  log_every_n_steps: 100
+  eval_every_n_epochs: 2
+  wandb:
+    enabled: true
+    project: rt-tddft-ml
+    run_name: phase2_multi_mol

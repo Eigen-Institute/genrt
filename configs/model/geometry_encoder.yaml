@@ -1,0 +1,34 @@
+# E3NN Geometry Encoder Configuration
+# SO(3)-equivariant molecular encoder using E3NN
+
+# Output irreducible representations
+# L=0 (scalar): local chemical environment
+# L=1 (vector): directional/field coupling
+# L=2 (tensor): d-orbital structure
+irreps_out: "32x0e + 16x1o + 8x2e"
+
+# Number of E3NN convolution layers
+num_layers: 4
+
+# Cutoff radius for neighbor interactions (Angstroms)
+max_radius: 5.0
+
+# Radial basis configuration
+radial_basis:
+  type: "bessel"
+  num_basis: 8
+
+# Node embedding dimension for atomic features
+node_embed_dim: 64
+
+# Maximum number of neighbors to consider
+num_neighbors: 10
+
+# Edge feature irreps (distance scalar + unit vector)
+irreps_edge_attr: "1x0e + 1x1o"
+
+# Whether to use self-connections in graph convolution
+use_self_connection: true
+
+# Activation function for invariant features
+activation: "silu"

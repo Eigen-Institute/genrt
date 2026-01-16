@@ -1,0 +1,95 @@
+# Phase 3: Generalization Training Configuration
+# Training on diverse molecules for zero-shot transfer
+
+# Data
+data:
+  path: data/processed
+  molecules:
+    - h2p
+    - h2
+    - lih
+    - h2o
+    - nh3
+    - ch4
+  val_split: 0.15
+  trajectory_length: 256
+  batch_size: 4
+
+# Model - larger for generalization
+model:
+  latent_dim: 512
+  n_mamba_layers: 8
+  d_state: 32
+  geometry_irreps: "64x0e + 32x1o + 16x2e"
+  max_l: 3
+
+# Training
+training:
+  max_epochs: 300
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  max_grad_norm: 0.5
+  warmup_steps: 2000
+
+  # Minimal teacher forcing for robust rollout
+  teacher_forcing_ratio: 0.1
+
+  # Loss weights - higher physics constraints
+  lambda_reconstruction: 1.0
+  lambda_gradient: 10.0
+  lambda_hermitian: 2.0
+  lambda_trace: 10.0
+  lambda_idempotent: 1.0
+
+  # Use scaled losses (TDDFTNet)
+  use_scaled_loss: true
+  use_variance_weighting: true
+
+# Curriculum - extended horizon
+curriculum:
+  type: tddftnet
+  horizon_stages: [32, 64, 128, 256]
+  epochs_per_stage: 50
+  bundle_size: 4
+
+# Molecule ladder
+molecule_ladder:
+  stages:
+    - name: simple
+      epochs: 75
+      molecules: [h2p, h2, lih]
+      max_field_strength: 0.005
+    - name: medium
+      epochs: 100
+      molecules: [h2o, nh3, ch4]
+      max_field_strength: 0.01
+    - name: mixed
+      epochs: 125
+      molecules: [h2p, h2, lih, h2o, nh3, ch4]
+      max_field_strength: 0.02
+
+# Hardware
+hardware:
+  device: cuda
+  use_amp: true
+  num_workers: 8
+  gradient_accumulation_steps: 4
+
+# Checkpointing
+checkpoint:
+  dir: checkpoints/phase3_generalization
+  save_every_n_epochs: 20
+  save_every_n_steps: 5000
+  keep_last_n: 10
+
+# Logging
+logging:
+  log_every_n_steps: 200
+  eval_every_n_epochs: 5
+  wandb:
+    enabled: true
+    project: rt-tddft-ml
+    run_name: phase3_generalization
+    tags:
+      - generalization
+      - multi-molecule

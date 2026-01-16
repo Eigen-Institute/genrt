@@ -1,0 +1,33 @@
+#----------------------------------------------------------------------
+# Basis Set Exchange
+# Version 0.11
+# https://www.basissetexchange.org
+#----------------------------------------------------------------------
+#   Basis set: PB4-D
+# Description: PB4-D protonic basis
+#        Role: orbital
+#     Version: 1  (Data from Table I)
+#----------------------------------------------------------------------
+
+
+BASIS "ao basis" SPHERICAL PRINT
+#BASIS SET: (4s,3p,2d) -> [4s,3p,2d]
+H    S
+     31.997                  1.0
+H    S
+     16.010                  1.0
+H    S
+      8.734                  1.0
+H    S
+      1.957                  1.0
+H    P
+     24.028                  1.0
+H    P
+     13.795                  1.0
+H    P
+      9.438                  1.0
+H    D
+     19.016                  1.0
+H    D
+     10.524                  1.0
+END

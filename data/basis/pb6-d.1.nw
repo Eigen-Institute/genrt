@@ -1,0 +1,45 @@
+#----------------------------------------------------------------------
+# Basis Set Exchange
+# Version 0.11
+# https://www.basissetexchange.org
+#----------------------------------------------------------------------
+#   Basis set: PB6-D
+# Description: PB6-D protonic basis
+#        Role: orbital
+#     Version: 1  (Data from Table I)
+#----------------------------------------------------------------------
+
+
+BASIS "ao basis" SPHERICAL PRINT
+#BASIS SET: (6s,5p,4d) -> [6s,5p,4d]
+H    S
+     38.754                  1.0
+H    S
+     31.110                  1.0
+H    S
+     16.231                  1.0
+H    S
+      9.088                  1.0
+H    S
+      4.840                  1.0
+H    S
+      2.513                  1.0
+H    P
+     25.716                  1.0
+H    P
+     16.347                  1.0
+H    P
+      9.996                  1.0
+H    P
+      5.897                  1.0
+H    P
+      2.174                  1.0
+H    D
+     25.541                  1.0
+H    D
+     17.256                  1.0
+H    D
+     11.015                  1.0
+H    D
+      2.930                  1.0
+END
