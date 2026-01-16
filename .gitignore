@@ -112,3 +112,8 @@ wandb/
 *.tmp
 *.temp
 .DS_Store
+
+#Markdown
+guide.md
+guide_updated.md
+roadmap.md

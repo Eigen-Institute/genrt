@@ -1,4 +1,4 @@
-# genrt
+# GenRT
 
 **Machine Learning Accelerator for Real-Time Time-Dependent Density Functional Theory (RT-TDDFT)**
 
