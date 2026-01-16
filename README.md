@@ -182,7 +182,6 @@ python scripts/evaluate.py \
 ## Documentation
 
 - **[User's Guide](docs/users_guide.md)**: Comprehensive documentation with examples
-- **[CLAUDE.md](CLAUDE.md)**: Technical reference for AI assistants
 
 ## Testing
 
