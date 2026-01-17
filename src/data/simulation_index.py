@@ -38,6 +38,7 @@ class SimulationRecord:
         walltime: Simulation walltime (seconds)
         density_dir: Directory containing density restart files
         density_pattern: Pattern for restart file names
+        ao_overlap: Path to AO overlap matrix file (.npy)
     """
 
     molecule: str
@@ -59,6 +60,7 @@ class SimulationRecord:
     walltime: float
     density_dir: str
     density_pattern: Optional[str]
+    ao_overlap: Optional[str] = None
 
     @classmethod
     def from_series(cls, row: pd.Series) -> "SimulationRecord":
@@ -83,6 +85,7 @@ class SimulationRecord:
             walltime=float(row["walltime"]) if pd.notna(row["walltime"]) else 0.0,
             density_dir=str(row["density_dir"]),
             density_pattern=str(row["density_pattern"]) if pd.notna(row["density_pattern"]) else None,
+            ao_overlap=str(row["ao_overlap"]) if "ao_overlap" in row and pd.notna(row["ao_overlap"]) else None,
         )
 
     def get_density_dir(self) -> Path:

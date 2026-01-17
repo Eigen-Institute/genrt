@@ -1,0 +1,239 @@
+# Phase 1: H2 and H2+ Foundation Training
+#
+# Train on the simplest molecules (4 basis functions each) to validate:
+# - Model architecture and loss functions
+# - Closed-shell (H2, n_spin=1) vs open-shell (H2+, n_spin=2) handling
+# - Geometry generalization across normal mode displacements
+# - Field type generalization (delta vs gaussian)
+#
+# Data from rt_simulations.pkl:
+# - H2:  37 trajectories, n_spin=1, nbf=4, ~10k steps each
+# - H2+: 40 trajectories, n_spin=2, nbf=4, ~10k steps each
+# - Geometries: eq, pdq, p2dq, mdq, m2dq (equilibrium + normal mode displacements)
+# - Fields: delta (impulsive) and gaussian (resonant) in x, y, z polarizations
+
+# =============================================================================
+# DATA CONFIGURATION
+# =============================================================================
+data:
+  # Simulation index file
+  index_path: data/rt_simulations.pkl
+
+  # Output directory for converted HDF5 files
+  processed_dir: data/processed/phase1
+
+  # Molecule selection
+  molecules:
+    - h2
+    - h2p
+
+  # Geometry splits for train/val/test
+  # Train on equilibrium + small displacements, test on larger displacements
+  train_geometries:
+    - eq
+    - pdq
+    - mdq
+  val_geometries:
+    - p2dq
+  test_geometries:
+    - m2dq
+
+  # Field types to include
+  field_types:
+    - delta
+    - gaussian
+
+  # Data loading
+  batch_size: 32
+  num_workers: 4
+  prefetch_factor: 2
+
+  # Trajectory windowing
+  window_size: 256        # Number of steps per training window
+  window_stride: 64       # Stride between windows (allows overlap)
+
+  # Data augmentation
+  augmentation:
+    geometry_noise_std: 0.01    # Angstroms
+    field_noise_std: 0.0001     # a.u.
+    random_rotation: true       # SO(3) rotation augmentation
+
+# =============================================================================
+# MODEL CONFIGURATION
+# =============================================================================
+model:
+  # Geometry encoder (E3NN)
+  geometry:
+    irreps: "16x0e + 8x1o + 4x2e"   # Smaller for Phase 1
+    num_layers: 3
+    max_radius: 5.0                  # Angstroms
+    num_basis: 8                     # Radial basis functions
+    max_atomic_number: 10            # H through Ne
+
+  # Density encoder
+  density:
+    latent_dim: 128
+    n_query_tokens: 16               # Smaller for 4-basis molecules
+    max_l: 1                         # s and p orbitals only for 3-21G
+    n_heads: 4
+    dropout: 0.1
+
+  # Dynamics (Mamba)
+  dynamics:
+    d_model: 128
+    d_state: 16
+    n_layers: 4
+    expand_factor: 2
+    dropout: 0.1
+
+  # Decoder
+  decoder:
+    max_spin: 2                      # Support both closed and open shell
+    spin_embed_dim: 32
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+training:
+  # Optimizer
+  optimizer: adamw
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+  # Learning rate schedule
+  scheduler: cosine_with_warmup
+  warmup_epochs: 5
+  min_lr_ratio: 0.01
+
+  # Gradient handling
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+
+  # Mixed precision
+  use_amp: true
+
+  # Loss weights (from guide.md recommendations)
+  loss_weights:
+    reconstruction: 1.0
+    derivative: 10.0       # Important for dynamics
+    hermiticity: 1.0
+    trace: 5.0
+    idempotency: 0.5
+
+# =============================================================================
+# CURRICULUM CONFIGURATION
+# =============================================================================
+curriculum:
+  # Horizon curriculum: gradually increase prediction horizon
+  horizon:
+    enabled: true
+    stages:
+      - horizon: 16
+        epochs: 20
+      - horizon: 32
+        epochs: 20
+      - horizon: 64
+        epochs: 30
+      - horizon: 128
+        epochs: 30
+      - horizon: 256
+        epochs: 50
+
+  # Molecule curriculum: start simple, add complexity
+  molecule:
+    enabled: true
+    stages:
+      # Stage 1: H2 only (closed-shell baseline)
+      - molecules: [h2]
+        epochs: 50
+        description: "Closed-shell baseline"
+
+      # Stage 2: Add H2+ (introduce open-shell)
+      - molecules: [h2, h2p]
+        epochs: 100
+        description: "Mixed closed/open shell"
+
+# =============================================================================
+# PHYSICS CONSTRAINTS
+# =============================================================================
+physics:
+  # Apply during training (soft constraints via loss)
+  training:
+    check_hermiticity: true
+    check_trace: true
+    check_idempotency: true
+
+  # Apply during inference (hard projection)
+  inference:
+    project_hermitian: true
+    project_trace: true
+    mcweeney_iterations: 3
+    mcweeney_threshold: 0.01
+
+# =============================================================================
+# CHECKPOINTING AND LOGGING
+# =============================================================================
+checkpoint:
+  dir: checkpoints/phase1_h2_h2p
+  save_every_n_epochs: 10
+  keep_last_n: 5
+  save_best: true
+  best_metric: val/frobenius_error
+  best_mode: min
+
+logging:
+  log_every_n_steps: 50
+  eval_every_n_epochs: 1
+
+  # Metrics to track
+  metrics:
+    - frobenius_error
+    - trace_violation
+    - hermiticity_violation
+    - dipole_error
+
+  # Visualization
+  plot_every_n_epochs: 10
+  plot_trajectory_samples: 3
+
+  # Weights & Biases (optional)
+  wandb:
+    enabled: false
+    project: genrt
+    name: phase1_h2_h2p
+    tags:
+      - phase1
+      - h2
+      - h2p
+
+# =============================================================================
+# EVALUATION TARGETS
+# =============================================================================
+targets:
+  # Success criteria for Phase 1
+  max_frobenius_error: 1.0e-4      # At horizon 64
+  max_trace_violation: 1.0e-6
+  max_hermiticity_violation: 1.0e-8
+  min_spectrum_overlap: 0.95
+
+  # Per-horizon targets
+  horizon_targets:
+    16:
+      frobenius_error: 1.0e-5
+    32:
+      frobenius_error: 5.0e-5
+    64:
+      frobenius_error: 1.0e-4
+    128:
+      frobenius_error: 5.0e-4
+    256:
+      frobenius_error: 1.0e-3
+
+# =============================================================================
+# HARDWARE
+# =============================================================================
+hardware:
+  device: auto                       # auto, cuda, cpu
+  precision: 16-mixed               # 32, 16-mixed, bf16-mixed
+  compile: false                    # torch.compile (experimental)

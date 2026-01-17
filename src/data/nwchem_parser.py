@@ -7,6 +7,7 @@ needed for training the ML model.
 """
 
 import numpy as np
+import os
 import re
 import struct
 from pathlib import Path
@@ -290,9 +291,10 @@ class NWChemParser:
         """
         Parse density matrix from NWChem RT-TDDFT restart file.
 
-        NWChem rt_restart files are Fortran unformatted binary with:
-        - Fortran record markers (4-byte integers before/after each record)
-        - Complex density matrix in column-major (Fortran) order
+        Supports two formats:
+        1. Text format (newer NWChem): Header with metadata followed by
+           space-separated real/imag pairs
+        2. Binary format: Fortran unformatted with record markers
 
         Args:
             filepath: Path to rt_restart file
@@ -305,6 +307,135 @@ class NWChemParser:
         filepath = Path(filepath)
         filesize = filepath.stat().st_size
 
+        # First, try to detect if it's a text file by reading the header
+        with open(filepath, "rb") as f:
+            header = f.read(20)
+
+        # Check for text format (starts with "RT-TDDFT")
+        if header.startswith(b"RT-TDDFT"):
+            return self._parse_rt_restart_text(filepath, n_basis, n_spin)
+
+        # Otherwise, try binary parsing strategies
+        return self._parse_rt_restart_binary(filepath, n_basis, n_spin, filesize)
+
+    def _parse_rt_restart_text(
+        self,
+        filepath: Path,
+        n_basis: int,
+        n_spin: int,
+    ) -> np.ndarray:
+        """
+        Parse text-format RT-TDDFT restart file.
+
+        Text format:
+            RT-TDDFT restart file
+            created   <timestamp>
+            nmats     <n_spin>
+            nbf_ao    <n_basis>
+            it        <step>
+            t         <time>
+            checksum  <value>
+            <real1> <imag1> <real2> <imag2> ...
+
+        Args:
+            filepath: Path to restart file
+            n_basis: Expected number of basis functions
+            n_spin: Expected number of spin channels
+
+        Returns:
+            Complex density matrix of shape (n_spin, n_basis, n_basis)
+        """
+        with open(filepath, "r") as f:
+            lines = f.readlines()
+
+        # Parse header
+        metadata = {}
+        data_start_line = 0
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for key-value pairs in header
+            if line.startswith("RT-TDDFT"):
+                continue
+            elif line.startswith("created"):
+                continue
+            elif line.startswith("nmats"):
+                metadata["nmats"] = int(line.split()[1])
+            elif line.startswith("nbf_ao"):
+                metadata["nbf_ao"] = int(line.split()[1])
+            elif line.startswith("it"):
+                metadata["it"] = int(line.split()[1])
+            elif line.startswith("t "):
+                metadata["t"] = float(line.split()[1])
+            elif line.startswith("checksum"):
+                metadata["checksum"] = float(line.split()[1])
+                data_start_line = i + 1
+                break
+
+        # Validate metadata
+        file_nmats = metadata.get("nmats", 1)
+        file_nbf = metadata.get("nbf_ao", n_basis)
+
+        if file_nbf != n_basis:
+            raise ValueError(
+                f"Basis size mismatch in {filepath}: "
+                f"file has nbf_ao={file_nbf}, expected {n_basis}"
+            )
+
+        # Parse density matrix data
+        # Data is space-separated real/imag pairs, may span multiple lines
+        data_text = " ".join(lines[data_start_line:])
+        values = [float(x) for x in data_text.split()]
+
+        # Expected: n_spin matrices, each with n_basis^2 complex elements
+        # Each complex element = 2 floats (real, imag)
+        expected_values = file_nmats * n_basis * n_basis * 2
+
+        if len(values) != expected_values:
+            raise ValueError(
+                f"Data size mismatch in {filepath}: "
+                f"got {len(values)} values, expected {expected_values} "
+                f"for nmats={file_nmats}, nbf={n_basis}"
+            )
+
+        # Convert to complex array
+        # Values are interleaved: real1, imag1, real2, imag2, ...
+        real_parts = np.array(values[0::2])
+        imag_parts = np.array(values[1::2])
+        complex_arr = real_parts + 1j * imag_parts
+
+        # Reshape to (n_spin, n_basis, n_basis)
+        # NWChem stores in column-major (Fortran) order
+        matrices = complex_arr.reshape(file_nmats, n_basis, n_basis, order='F')
+
+        # If file has fewer spin channels than requested, duplicate
+        if file_nmats < n_spin:
+            matrices = np.tile(matrices, (n_spin // file_nmats + 1, 1, 1))[:n_spin]
+
+        return matrices[:n_spin]
+
+    def _parse_rt_restart_binary(
+        self,
+        filepath: Path,
+        n_basis: int,
+        n_spin: int,
+        filesize: int,
+    ) -> np.ndarray:
+        """
+        Parse binary-format RT-TDDFT restart file (Fortran unformatted).
+
+        Args:
+            filepath: Path to restart file
+            n_basis: Number of basis functions
+            n_spin: Number of spin channels
+            filesize: Size of file in bytes
+
+        Returns:
+            Complex density matrix of shape (n_spin, n_basis, n_basis)
+        """
         # Expected size for complex matrix (2 doubles per element)
         matrix_size = n_spin * n_basis * n_basis
         expected_bytes = matrix_size * 16  # complex128 = 16 bytes
@@ -312,7 +443,6 @@ class NWChemParser:
         with open(filepath, "rb") as f:
             data = f.read()
 
-        # Try different parsing strategies
         # Strategy 1: Raw complex128 data (no Fortran markers)
         if filesize == expected_bytes:
             arr = np.frombuffer(data, dtype=np.complex128)
@@ -462,25 +592,38 @@ class NWChemParser:
 
         # Parse overlap matrix
         overlap = None
-        overlap_files = [
-            overlap_file,
-            "overlap.dat",
-            f"{record.calc_name}.overlap",
-            f"{record.molecule}_overlap.dat",
-        ]
 
-        for of in overlap_files:
-            if of is not None:
-                of_path = density_dir / of
-                if of_path.exists():
-                    try:
-                        overlap = self.parse_overlap_matrix(of)
-                        break
-                    except Exception:
-                        continue
+        # First, try the ao_overlap field from the record (numpy file path)
+        if hasattr(record, 'ao_overlap') and record.ao_overlap is not None:
+            ao_overlap_path = Path(os.path.expanduser(record.ao_overlap))
+            if ao_overlap_path.exists():
+                try:
+                    overlap = np.load(ao_overlap_path)
+                except Exception as e:
+                    print(f"Warning: Failed to load ao_overlap from {ao_overlap_path}: {e}")
+
+        # Fall back to searching for overlap files in density_dir
+        if overlap is None:
+            overlap_files = [
+                overlap_file,
+                "overlap.dat",
+                f"{record.calc_name}.overlap",
+                f"{record.molecule}_overlap.dat",
+            ]
+
+            for of in overlap_files:
+                if of is not None:
+                    of_path = density_dir / of
+                    if of_path.exists():
+                        try:
+                            overlap = self.parse_overlap_matrix(of)
+                            break
+                        except Exception:
+                            continue
 
         if overlap is None:
             # Use identity matrix as fallback (orthonormal basis approximation)
+            print(f"Warning: No overlap matrix found, using identity for {record.calc_name}")
             overlap = np.eye(record.nbf, dtype=np.float64)
 
         # Find and parse restart files

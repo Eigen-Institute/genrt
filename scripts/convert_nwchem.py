@@ -132,7 +132,7 @@ def convert_batch(
             continue
 
         # Check if directory has density files
-        density_files = list(subdir.glob("density_*.dat"))
+        density_files = list(subdir.glob("*.rt_restart.*.dat"))
         if not density_files:
             if verbose:
                 print(f"Skipping {subdir}: no density files found")
