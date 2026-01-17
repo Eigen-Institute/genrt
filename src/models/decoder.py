@@ -173,6 +173,7 @@ class DensityDecoder(nn.Module):
         self.latent_dim = latent_dim
         self.n_query_tokens = n_query_tokens
         self.spin_embed_dim = spin_embed_dim
+        self.max_l = max_l
 
         # Spin embedding for conditioning decoder on spin channel
         # Index 0 = alpha (or closed-shell), Index 1 = beta
@@ -227,10 +228,12 @@ class DensityDecoder(nn.Module):
         device = Z.device
         n_basis = Z.shape[0]
 
-        m_shifted = m + 3
+        # Shift m to be non-negative for embedding lookup
+        # m ranges from -l to +l, so shift by max_l to get indices 0 to 2*max_l
+        m_shifted = m + self.max_l
         elem_emb = self.element_embed(Z)
         l_emb = self.l_embed(l)
-        m_emb = self.m_embed(m_shifted.clamp(0, 6))
+        m_emb = self.m_embed(m_shifted.clamp(0, 2 * self.max_l))
 
         # Get spin embedding and broadcast to all orbitals
         spin_tensor = torch.tensor([spin_idx], device=device, dtype=torch.long)

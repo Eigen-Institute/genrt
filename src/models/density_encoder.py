@@ -37,6 +37,7 @@ class OrbitalEmbedding(nn.Module):
     ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.max_l = max_l
 
         # Embeddings for each property
         self.element_embed = nn.Embedding(max_atomic_number, 32)
@@ -68,11 +69,12 @@ class OrbitalEmbedding(nn.Module):
             Orbital embeddings, shape (n_basis, embed_dim)
         """
         # Shift m to be non-negative for embedding lookup
-        m_shifted = magnetic_quantum + 3  # Assuming max_l=3, shift by max_l
+        # m ranges from -l to +l, so shift by max_l to get indices 0 to 2*max_l
+        m_shifted = magnetic_quantum + self.max_l
 
         elem_emb = self.element_embed(atomic_numbers)
         l_emb = self.l_embed(angular_momentum)
-        m_emb = self.m_embed(m_shifted.clamp(0, 6))
+        m_emb = self.m_embed(m_shifted.clamp(0, 2 * self.max_l))
 
         combined = torch.cat([elem_emb, l_emb, m_emb], dim=-1)
         return self.proj(combined)

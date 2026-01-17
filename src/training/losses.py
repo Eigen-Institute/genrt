@@ -140,12 +140,16 @@ class TraceLoss(nn.Module):
 
         Args:
             rho: Density matrix, shape (..., n, n) complex
-            overlap: Overlap matrix, shape (n, n)
+            overlap: Overlap matrix, shape (n, n) (can be real or complex)
             n_electrons: Target number of electrons
 
         Returns:
             Scalar loss
         """
+        # Ensure overlap has same dtype as rho for einsum compatibility
+        if not overlap.is_complex() and rho.is_complex():
+            overlap = overlap.to(rho.dtype)
+
         trace = torch.einsum("...ij,ji->...", rho, overlap).real
         violation = (trace - n_electrons).pow(2)
         return violation.mean()
@@ -169,11 +173,15 @@ class IdempotencyLoss(nn.Module):
 
         Args:
             rho: Density matrix, shape (..., n, n) complex
-            overlap: Overlap matrix, shape (n, n)
+            overlap: Overlap matrix, shape (n, n) (can be real or complex)
 
         Returns:
             Scalar loss
         """
+        # Ensure overlap has same dtype as rho for matmul compatibility
+        if not overlap.is_complex() and rho.is_complex():
+            overlap = overlap.to(rho.dtype)
+
         rho_S_rho = rho @ overlap @ rho
         violation = rho_S_rho - rho
         return violation.abs().pow(2).mean()

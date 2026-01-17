@@ -167,7 +167,7 @@ class EquivariantConvolution(nn.Module):
 
         # Aggregate messages at destination nodes
         aggregated = torch.zeros(
-            n_nodes, self.irreps_out.dim, device=node_features.device
+            n_nodes, self.irreps_out.dim, device=node_features.device, dtype=messages.dtype
         )
         aggregated.scatter_add_(0, dst.unsqueeze(-1).expand_as(messages), messages)
 

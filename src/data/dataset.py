@@ -345,6 +345,8 @@ def collate_fixed_basis(samples: list[dict]) -> dict:
     Collate function for fixed basis set size (single molecule type).
 
     All samples must have the same n_basis for this to work.
+    Handles variable n_spin by padding closed-shell (n_spin=1) to match
+    open-shell (n_spin=2) by duplicating the single spin channel.
 
     Args:
         samples: List of sample dictionaries
@@ -360,14 +362,40 @@ def collate_fixed_basis(samples: list[dict]) -> dict:
             f"got {n_basis_set}"
         )
 
+    # Find max n_spin in batch
+    max_n_spin = max(s["density_current"].shape[0] for s in samples)
+
+    # Pad density matrices to max_n_spin
+    def pad_spin(density: Tensor, target_n_spin: int) -> Tensor:
+        """Pad closed-shell density to open-shell by duplicating spin channel."""
+        current_n_spin = density.shape[0]
+        if current_n_spin == target_n_spin:
+            return density
+        elif current_n_spin == 1 and target_n_spin == 2:
+            # Closed-shell: alpha = beta, so duplicate
+            return torch.cat([density, density], dim=0)
+        else:
+            raise ValueError(f"Cannot pad n_spin={current_n_spin} to {target_n_spin}")
+
+    density_current = torch.stack([
+        pad_spin(s["density_current"], max_n_spin) for s in samples
+    ])
+    density_next = torch.stack([
+        pad_spin(s["density_next"], max_n_spin) for s in samples
+    ])
+
+    # Track original n_spin for each sample (for loss computation)
+    n_spin_per_sample = torch.tensor([s["density_current"].shape[0] for s in samples])
+
     batch = {
         "positions": torch.stack([s["positions"] for s in samples]),
         "atomic_numbers": torch.stack([s["atomic_numbers"] for s in samples]),
-        "density_current": torch.stack([s["density_current"] for s in samples]),
-        "density_next": torch.stack([s["density_next"] for s in samples]),
+        "density_current": density_current,
+        "density_next": density_next,
         "field": torch.stack([s["field"] for s in samples]),
         "overlap": torch.stack([s["overlap"] for s in samples]),
         "n_electrons": torch.stack([s["n_electrons"] for s in samples]),
+        "n_spin": n_spin_per_sample,
         "graphs": [s["graph"] for s in samples],
         "basis_metadata": samples[0]["basis_metadata"],  # Assume same for all
     }

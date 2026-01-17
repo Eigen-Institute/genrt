@@ -223,25 +223,34 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def create_model(config: Dict, n_basis: int = 13) -> nn.Module:
+def create_model(config: Dict) -> nn.Module:
     """Create model from configuration."""
-    from src.models.full_model import RTTDDFTModel
+    from src.models.full_model import RTTDDFTModel, RTTDDFTConfig
 
     model_config = config.get('model', {})
+    geometry_config = model_config.get('geometry', {})
+    density_config = model_config.get('density', {})
+    dynamics_config = model_config.get('dynamics', {})
 
-    # Set defaults
-    model_config.setdefault('latent_dim', 256)
-    model_config.setdefault('n_mamba_layers', 6)
-    model_config.setdefault('d_state', 16)
-    model_config.setdefault('geometry_irreps', "32x0e + 16x1o + 8x2e")
-
-    return RTTDDFTModel(
-        n_basis=n_basis,
-        latent_dim=model_config['latent_dim'],
-        n_mamba_layers=model_config['n_mamba_layers'],
-        d_state=model_config['d_state'],
-        geometry_irreps=model_config['geometry_irreps'],
+    # Build RTTDDFTConfig from YAML structure
+    rttddft_config = RTTDDFTConfig(
+        # Geometry encoder
+        geometry_irreps=geometry_config.get('irreps', "32x0e + 16x1o + 8x2e"),
+        geometry_layers=geometry_config.get('num_layers', 4),
+        max_radius=geometry_config.get('max_radius', 5.0),
+        num_radial_basis=geometry_config.get('num_basis', 8),
+        # Density encoder
+        latent_dim=density_config.get('latent_dim', 256),
+        n_query_tokens=density_config.get('n_query_tokens', 32),
+        max_l=density_config.get('max_l', 2),
+        # Dynamics (Mamba)
+        mamba_d_model=dynamics_config.get('d_model', 256),
+        mamba_d_state=dynamics_config.get('d_state', 16),
+        mamba_layers=dynamics_config.get('n_layers', 6),
+        mamba_dropout=dynamics_config.get('dropout', 0.1),
     )
+
+    return RTTDDFTModel(rttddft_config)
 
 
 def create_dataloaders(
@@ -252,7 +261,7 @@ def create_dataloaders(
     trajectory_length: int,
 ) -> tuple:
     """Create training and validation data loaders."""
-    from src.data.dataset import TrajectoryDataset
+    from src.data.dataset import UnifiedTrajectoryDataset, collate_fixed_basis
 
     data_path = Path(data_path)
 
@@ -267,8 +276,8 @@ def create_dataloaders(
 
     logger.info(f"Found {len(h5_files)} trajectory files")
 
-    # Create dataset
-    dataset = TrajectoryDataset(
+    # Create dataset (UnifiedTrajectoryDataset handles multiple trajectory files)
+    dataset = UnifiedTrajectoryDataset(
         trajectory_paths=h5_files,
         sequence_length=trajectory_length,
     )
@@ -285,7 +294,8 @@ def create_dataloaders(
 
     logger.info(f"Train samples: {n_train}, Val samples: {n_val}")
 
-    # Create data loaders
+    # Create data loaders with custom collate function for fixed basis size
+    # (H2 and H2+ both have nbf=4)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -293,6 +303,7 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        collate_fn=collate_fixed_basis,
     )
 
     val_loader = DataLoader(
@@ -301,6 +312,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        collate_fn=collate_fixed_basis,
     ) if n_val > 0 else None
 
     return train_loader, val_loader, dataset
@@ -309,7 +321,8 @@ def create_dataloaders(
 def create_dummy_dataloaders(
     batch_size: int,
     n_samples: int = 100,
-    n_basis: int = 13,
+    n_basis: int = 4,
+    n_spin: int = 1,
     trajectory_length: int = 64,
 ) -> tuple:
     """Create dummy data loaders for testing without real data."""
@@ -317,23 +330,27 @@ def create_dummy_dataloaders(
 
     logger.warning("Using dummy data for testing - no real data found")
 
-    # Create random trajectories
-    density = torch.randn(n_samples, trajectory_length + 1, n_basis, n_basis, dtype=torch.complex64)
-    density = 0.5 * (density + density.conj().transpose(-2, -1))  # Hermitian
+    # Create random density matrices
+    # Shape: (n_samples, n_spin, n_basis, n_basis)
+    density_current = torch.randn(n_samples, n_spin, n_basis, n_basis, dtype=torch.complex64)
+    density_current = 0.5 * (density_current + density_current.conj().transpose(-2, -1))  # Hermitian
+    density_next = torch.randn(n_samples, n_spin, n_basis, n_basis, dtype=torch.complex64)
+    density_next = 0.5 * (density_next + density_next.conj().transpose(-2, -1))  # Hermitian
 
-    field = torch.randn(n_samples, trajectory_length + 1, 3)
-    overlap = torch.eye(n_basis).unsqueeze(0).expand(n_samples, -1, -1)
-    n_electrons = torch.full((n_samples,), 2)
+    field = torch.randn(n_samples, 3)
+    overlap = torch.eye(n_basis, dtype=torch.complex64).unsqueeze(0).expand(n_samples, -1, -1)
+    n_electrons = torch.full((n_samples,), 2, dtype=torch.float32)
 
-    # Geometry
-    positions = torch.randn(n_samples, 3, 3)
-    atomic_numbers = torch.tensor([[1, 1, 8]]).expand(n_samples, -1)
+    # Geometry (H2-like: 2 atoms)
+    positions = torch.zeros(n_samples, 2, 3)
+    positions[:, 1, 2] = 0.74  # H-H bond length
+    atomic_numbers = torch.tensor([[1, 1]]).expand(n_samples, -1)
 
     # Create dataset with dict-like access
     class DictDataset(torch.utils.data.Dataset):
         def __init__(self, data):
             self.data = data
-            self.length = data['density'].shape[0]
+            self.length = data['density_current'].shape[0]
 
         def __len__(self):
             return self.length
@@ -342,9 +359,10 @@ def create_dummy_dataloaders(
             return {k: v[idx] for k, v in self.data.items()}
 
     data = {
-        'density': density,
+        'density_current': density_current,
+        'density_next': density_next,
         'field': field,
-        'overlap': overlap.to(torch.complex64),
+        'overlap': overlap,
         'n_electrons': n_electrons,
         'positions': positions,
         'atomic_numbers': atomic_numbers,
@@ -433,19 +451,16 @@ def main():
             num_workers=args.num_workers,
             trajectory_length=args.trajectory_length,
         )
-        # Get n_basis from dataset
-        sample = dataset[0]
-        n_basis = sample['density'].shape[-1] if isinstance(sample, dict) else sample[0].shape[-1]
+        logger.info(f"Loaded {len(dataset)} samples from {args.data}")
     except (FileNotFoundError, Exception) as e:
         logger.warning(f"Could not load data: {e}")
         train_loader, val_loader, dataset = create_dummy_dataloaders(
             batch_size=args.batch_size,
             trajectory_length=args.trajectory_length,
         )
-        n_basis = 13
 
     # Create model
-    model = create_model(config, n_basis=n_basis)
+    model = create_model(config)
     logger.info(f"Created model with {sum(p.numel() for p in model.parameters()):,} parameters")
 
     # Create loss function

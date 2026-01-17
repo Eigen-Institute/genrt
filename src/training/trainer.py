@@ -313,17 +313,112 @@ class Trainer:
         trajectory_length: int,
     ) -> Tuple[Tensor, Dict[str, float]]:
         """
-        Single training step with trajectory unrolling.
+        Single training step.
+
+        Supports two batch formats:
+        1. Trajectory format: batch['density'] with shape (batch, n_steps, n_spin, n_basis, n_basis)
+        2. Single-step format: batch['density_current'] and batch['density_next']
 
         Args:
             batch: Batch of training data
+            trajectory_length: Number of steps to unroll (ignored for single-step format)
+
+        Returns:
+            Tuple of (loss, metrics_dict)
+        """
+        # Detect batch format
+        if 'density_current' in batch:
+            return self._single_step_training(batch)
+        else:
+            return self._trajectory_training(batch, trajectory_length)
+
+    def _single_step_training(
+        self,
+        batch: Dict[str, Tensor],
+    ) -> Tuple[Tensor, Dict[str, float]]:
+        """
+        Training step for single-step (current, next) pairs.
+
+        Args:
+            batch: Batch containing 'density_current', 'density_next', 'field', etc.
+
+        Returns:
+            Tuple of (loss, metrics_dict)
+        """
+        # Extract batch components
+        rho_current = batch['density_current']  # (batch, n_spin, n_basis, n_basis)
+        rho_target = batch['density_next']  # (batch, n_spin, n_basis, n_basis)
+        field = batch['field']  # (batch, 3)
+        overlap = batch['overlap']  # (batch, n_basis, n_basis)
+        n_electrons = batch['n_electrons']  # (batch,)
+        positions = batch['positions']  # (batch, n_atoms, 3)
+        atomic_numbers = batch['atomic_numbers']  # (batch, n_atoms)
+        basis_metadata = batch['basis_metadata']  # dict
+
+        batch_size = rho_current.shape[0]
+        n_elec = n_electrons[0].item() if isinstance(n_electrons, Tensor) else n_electrons
+
+        total_loss = torch.tensor(0.0, device=self.device)
+        metrics = {'reconstruction': 0, 'gradient': 0, 'hermitian': 0, 'trace': 0, 'idempotent': 0}
+
+        with autocast(enabled=self.config.use_amp):
+            # Process each sample (RTTDDFTModel expects unbatched inputs currently)
+            predictions = []
+            for i in range(batch_size):
+                output = self.model(
+                    positions=positions[i],
+                    atomic_numbers=atomic_numbers[i],
+                    rho_current=rho_current[i],
+                    field=field[i],
+                    basis_metadata={k: v.to(self.device) if isinstance(v, Tensor) else v
+                                   for k, v in basis_metadata.items()},
+                    overlap=overlap[i],
+                    n_electrons=int(n_electrons[i].item()),
+                    apply_constraints=False,  # Don't apply during training
+                )
+                predictions.append(output['rho_pred'])
+
+            rho_pred = torch.stack(predictions)  # (batch, n_spin, n_basis, n_basis)
+
+            # Compute loss per sample
+            for i in range(batch_size):
+                overlap_i = overlap[i]
+                n_elec_i = int(n_electrons[i].item())
+
+                sample_loss, components = self.loss_fn(
+                    rho_pred[i], rho_target[i], rho_current[i], overlap_i, n_elec_i,
+                    return_components=True
+                )
+                total_loss = total_loss + sample_loss
+
+                for k, v in components.items():
+                    val = v.item() if isinstance(v, Tensor) else v
+                    metrics[k] += val
+
+        # Average over batch
+        total_loss = total_loss / batch_size
+        for k in metrics:
+            metrics[k] /= batch_size
+
+        return total_loss, metrics
+
+    def _trajectory_training(
+        self,
+        batch: Dict[str, Tensor],
+        trajectory_length: int,
+    ) -> Tuple[Tensor, Dict[str, float]]:
+        """
+        Training step with trajectory unrolling.
+
+        Args:
+            batch: Batch containing 'density' trajectory
             trajectory_length: Number of steps to unroll
 
         Returns:
             Tuple of (loss, metrics_dict)
         """
         # Extract batch components
-        density_trajectory = batch['density']  # (batch, n_steps, n_basis, n_basis)
+        density_trajectory = batch['density']  # (batch, n_steps, n_spin, n_basis, n_basis)
         field_sequence = batch['field']  # (batch, n_steps, 3)
         overlap = batch['overlap']  # (batch, n_basis, n_basis)
         n_electrons = batch['n_electrons']  # (batch,) or scalar
@@ -530,6 +625,10 @@ class MultiStepTrainer(Trainer):
         trajectory_length: int,
     ) -> Tuple[Tensor, Dict[str, float]]:
         """Training step using temporal bundling."""
+        # For single-step format, fall back to regular training
+        if 'density_current' in batch:
+            return self._single_step_training(batch)
+
         density_trajectory = batch['density']
         field_sequence = batch['field']
         overlap = batch['overlap']
